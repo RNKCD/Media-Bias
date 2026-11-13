@@ -1,9 +1,14 @@
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from database import test_connection
+from database import test_connection, engine
+
+from services.news_service import search_news
+from services.article_service import save_articles
+
+from sqlalchemy import text
 
 app = FastAPI(title="MediaLens API", version="0.1.0")
 
@@ -21,8 +26,45 @@ class EventRequest(BaseModel):
 def health():
     return {"status": "healthy"}
 
+
+
 @app.post("/api/analyze")
 def analyze_event(request: EventRequest):
+    event = request.event.strip()
+    articles = search_news(event, page_size=10)
+    storage = save_articles(event, articles)
+
+    print("NEWSAPI ARTICLES:", len(articles), flush=True)
+    print("DATABASE STORAGE:", storage, flush=True)
+
+    if not event:
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter a political event."
+        )
+
+    try:
+        articles = search_news(event, page_size=10)
+
+        return {
+            "event": event,
+            "status": "articles_retrieved",
+            "total_articles": len(articles),
+            "articles": articles
+        }
+
+    except requests.exceptions.RequestException:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to retrieve articles from NewsAPI."
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error)
+        )
+
     return {
         "event": request.event,
         "message": "Event received successfully!",
@@ -46,3 +88,19 @@ def database_health():
             "message": "Database connection failed"
         }
 
+
+@app.get("/api/debug/articles")
+def debug_articles():
+    with engine.connect() as connection:
+        database = connection.execute(
+            text("SELECT current_database()")
+        ).scalar_one()
+
+        count = connection.execute(
+            text("SELECT COUNT(*) FROM public.articles")
+        ).scalar_one()
+
+        return {
+            "database": database,
+            "article_count": count
+        }
