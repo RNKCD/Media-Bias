@@ -7,7 +7,7 @@ from database import engine
 from services.emotion_service import analyze_emotion
 
 
-def process_emotions():
+def process_emotions(event_id=None):
     processed = 0
     skipped = 0
 
@@ -24,8 +24,13 @@ def process_emotions():
                     ON ar.article_id = a.id
                     AND ar.model_name = 'VADER'
                 WHERE ar.emotion_label IS NULL
+                  AND (
+                      CAST(:event_id AS INTEGER) IS NULL
+                      OR a.event_id = :event_id
+                  )
                 ORDER BY a.id
-            """)
+            """),
+            {"event_id": event_id}
         ).mappings().all()
 
         for article in articles:

@@ -1,9 +1,68 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
+
+const FALLBACK_OUTLETS = [
+  "CNN", "Reuters", "Fox News", "BBC News", "Associated Press",
+  "The Guardian", "NBC News", "ABC News", "Al Jazeera", "The Hill",
+];
+const FALLBACK_DEFAULTS = ["CNN", "Reuters", "Fox News"];
 
 function App() {
   const [event, setEvent] = useState("");
+  const [availableOutlets, setAvailableOutlets] = useState(FALLBACK_OUTLETS);
+  const [maxOutlets, setMaxOutlets] = useState(15);
+  const [selectedOutlets, setSelectedOutlets] = useState(FALLBACK_DEFAULTS);
+  const [customOutlets, setCustomOutlets] = useState([]);
+  const [customInput, setCustomInput] = useState("");
+
+  useEffect(() => {
+    fetch("http://localhost:8000/api/outlets")
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => {
+        setAvailableOutlets(data.outlets || FALLBACK_OUTLETS);
+        setSelectedOutlets(data.defaults || FALLBACK_DEFAULTS);
+        if (data.max) setMaxOutlets(data.max);
+      })
+      .catch(() => {});
+  }, []);
+
+  const totalSelected = selectedOutlets.length + customOutlets.length;
+
+  function toggleOutlet(name) {
+    setSelectedOutlets((current) =>
+      current.includes(name)
+        ? current.filter((o) => o !== name)
+        : [...current, name]
+    );
+  }
+
+  function addCustomOutlet() {
+    const value = customInput.trim();
+    if (!value) return;
+
+    if (!value.includes(".") || /\s/.test(value)) {
+      setError("Enter an outlet website like politico.com");
+      return;
+    }
+
+    const normalized = value
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .split("/")[0];
+
+    if (!customOutlets.includes(normalized)) {
+      setCustomOutlets((current) => [...current, normalized]);
+    }
+    setCustomInput("");
+    setError("");
+  }
+
+  function removeCustomOutlet(domain) {
+    setCustomOutlets((current) => current.filter((d) => d !== domain));
+  }
+
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -14,9 +73,26 @@ function App() {
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [emotionResults, setEmotionResults] = useState([]);
 const [emotionLoading, setEmotionLoading] = useState(false);
+  // Outlets actually searched for the current results (from the backend).
+  const [searchedOutlets, setSearchedOutlets] = useState([]);
+
+  function outletParams(params = new URLSearchParams()) {
+    searchedOutlets.forEach((outlet) => params.append("outlets", outlet));
+    return params;
+  }
 
   async function handleAnalyze(e) {
     e.preventDefault();
+
+    if (totalSelected === 0) {
+      setError("Select or add at least one news outlet.");
+      return;
+    }
+
+    if (totalSelected > maxOutlets) {
+      setError(`Please select at most ${maxOutlets} outlets.`);
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -35,7 +111,11 @@ const [emotionLoading, setEmotionLoading] = useState(false);
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ event: event.trim() }),
+          body: JSON.stringify({
+            event: event.trim(),
+            outlets: selectedOutlets,
+            custom_outlets: customOutlets,
+          }),
         }
       );
 
@@ -43,6 +123,7 @@ const [emotionLoading, setEmotionLoading] = useState(false);
       console.log("Analyze API response:", data);
 
       setSelectedEventId(data.event_id ?? null);
+      setSearchedOutlets(data.searched_outlets || []);
       setNlpResults([]);
       setSentimentResults([]);
 
@@ -74,7 +155,9 @@ async function loadNlpResults() {
 
   try {
     const response = await fetch(
-      `http://localhost:8000/api/nlp/results?event_id=${selectedEventId}`
+      `http://localhost:8000/api/nlp/results?${outletParams(
+        new URLSearchParams({ event_id: String(selectedEventId) })
+      ).toString()}`
     );
 
     if (!response.ok) {
@@ -102,7 +185,9 @@ async function loadSentimentResults() {
 
   try {
     const response = await fetch(
-      `http://localhost:8000/api/sentiment/results?event_id=${selectedEventId}`
+      `http://localhost:8000/api/sentiment/results?${outletParams(
+        new URLSearchParams({ event_id: String(selectedEventId) })
+      ).toString()}`
     );
 
     if (!response.ok) {
@@ -120,6 +205,7 @@ async function loadSentimentResults() {
 }
  
 
+
 async function loadEmotionResults() {
   if (selectedEventId == null) {
     setError("Please search for an event first.");
@@ -129,8 +215,15 @@ async function loadEmotionResults() {
   setEmotionLoading(true);
 
   try {
+    const params = new URLSearchParams({
+      event_id: String(selectedEventId)
+    });
+
+    // Only the outlets that were actually searched
+    outletParams(params);
+
     const response = await fetch(
-      `http://localhost:8000/api/emotion/results?event_id=${selectedEventId}`
+      `http://localhost:8000/api/emotion/results?${params.toString()}`
     );
 
     if (!response.ok) {
@@ -139,6 +232,7 @@ async function loadEmotionResults() {
 
     const data = await response.json();
     setEmotionResults(data.results || []);
+
   } catch (error) {
     console.error("Emotion API error:", error);
     setError(error.message);
@@ -209,6 +303,64 @@ const outletComparison = Object.values(
             {loading ? "Searching..." : "Find News Coverage"}
           </button>
         </form>
+
+        <section className="outlet-picker">
+          <div className="outlet-picker-header">
+            <h3>News Outlets</h3>
+            <span>
+              {totalSelected} selected (max {maxOutlets})
+            </span>
+          </div>
+
+          <div className="outlet-options">
+            {availableOutlets.map((name) => (
+              <label
+                key={name}
+                className={`outlet-chip ${
+                  selectedOutlets.includes(name) ? "selected" : ""
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedOutlets.includes(name)}
+                  onChange={() => toggleOutlet(name)}
+                />
+                {name}
+              </label>
+            ))}
+
+            {customOutlets.map((domain) => (
+              <span key={domain} className="outlet-chip selected custom">
+                {domain}
+                <button
+                  type="button"
+                  aria-label={`Remove ${domain}`}
+                  onClick={() => removeCustomOutlet(domain)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+
+          <div className="custom-outlet">
+            <input
+              type="text"
+              placeholder="Add your own outlet, e.g. politico.com"
+              value={customInput}
+              onChange={(e) => setCustomInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addCustomOutlet();
+                }
+              }}
+            />
+            <button type="button" onClick={addCustomOutlet}>
+              Add Outlet
+            </button>
+          </div>
+        </section>
 
         {error && (
           <p className="error-message">{error}</p>

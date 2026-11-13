@@ -1,14 +1,21 @@
 
 import logging
+from typing import List, Optional
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from database import test_connection, engine
 
-from services.news_service import search_news
+from services.news_service import (
+    search_news,
+    resolve_targets,
+    NEWS_OUTLETS,
+    DEFAULT_OUTLETS,
+    MAX_OUTLETS,
+)
 from services.article_service import save_articles
 from services.nlp_pipeline import process_saved_articles
 from services.sentiment_pipeline import process_sentiment
@@ -29,10 +36,21 @@ app.add_middleware(
 
 class EventRequest(BaseModel):
     event: str
+    outlets: Optional[List[str]] = None
+    custom_outlets: List[str] = []
 
 @app.get("/api/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/api/outlets")
+def list_outlets():
+    return {
+        "outlets": list(NEWS_OUTLETS.keys()),
+        "defaults": DEFAULT_OUTLETS,
+        "max": MAX_OUTLETS,
+    }
 
 
 
@@ -47,15 +65,27 @@ def analyze_event(request: EventRequest):
         )
 
     try:
-        articles = search_news(event, page_size=10)
+        searched_outlets = list(
+            resolve_targets(
+                request.outlets,
+                request.custom_outlets,
+            ).keys()
+        )
+        articles = search_news(
+            event,
+            page_size=10,
+            selected_outlets=request.outlets,
+            custom_outlets=request.custom_outlets,
+        )
     except requests.exceptions.RequestException:
         raise HTTPException(
             status_code=502,
             detail="Unable to retrieve articles from NewsAPI."
         )
     except ValueError as error:
+        message = str(error)
         raise HTTPException(
-            status_code=500,
+            status_code=500 if "NEWS_API_KEY" in message or "NewsAPI" in message else 400,
             detail=str(error)
         )
 
@@ -74,6 +104,14 @@ def analyze_event(request: EventRequest):
             detail="Articles were retrieved, but saving or analysis failed. Check server logs."
         )
 
+    # Emotion analysis loads a large model, so a failure here should not
+    # discard the articles and sentiment results already produced.
+    try:
+        emotion = process_emotions(event_id=event_id)
+    except Exception:
+        logger.exception("Emotion processing failed")
+        emotion = {"error": "Emotion processing failed. Check server logs."}
+
     print("NEWSAPI ARTICLES:", len(articles), flush=True)
     print("DATABASE STORAGE:", storage, flush=True)
 
@@ -82,10 +120,12 @@ def analyze_event(request: EventRequest):
         "event_id": event_id,
         "status": "analysis_complete",
         "total_articles": len(articles),
+        "searched_outlets": searched_outlets,
         "storage": storage,
         "processing": {
             "nlp": nlp,
-            "sentiment": sentiment
+            "sentiment": sentiment,
+            "emotion": emotion
         },
         "articles": articles
     }
@@ -146,7 +186,10 @@ def run_nlp_processing():
 
 
 @app.get("/api/nlp/results")
-def get_nlp_results(event_id: int):
+def get_nlp_results(
+    event_id: int,
+    outlets: list[str] = Query(default=[])
+):
     with engine.connect() as connection:
         rows = connection.execute(
             text("""
@@ -161,9 +204,17 @@ def get_nlp_results(event_id: int):
                 JOIN articles a ON a.id = n.article_id
                 JOIN outlets o ON a.outlet_id = o.id
                 WHERE a.event_id = :event_id
+                  AND (
+                      :filter_outlets = FALSE
+                      OR o.name = ANY(:outlets)
+                  )
                 ORDER BY a.id DESC
             """),
-            {"event_id": event_id}
+            {
+                "event_id": event_id,
+                "filter_outlets": len(outlets) > 0,
+                "outlets": outlets
+            }
         ).mappings().all()
 
     return {
@@ -209,7 +260,10 @@ def run_sentiment_processing():
 
 
 @app.get("/api/sentiment/results")
-def get_sentiment_results(event_id: int):
+def get_sentiment_results(
+    event_id: int,
+    outlets: list[str] = Query(default=[])
+):
     with engine.connect() as connection:
         rows = connection.execute(
             text("""
@@ -227,9 +281,17 @@ def get_sentiment_results(event_id: int):
                 JOIN outlets o ON o.id = a.outlet_id
                 WHERE a.event_id = :event_id
                   AND ar.model_name = 'VADER'
+                  AND (
+                      :filter_outlets = FALSE
+                      OR o.name = ANY(:outlets)
+                  )
                 ORDER BY a.id DESC
             """),
-            {"event_id": event_id}
+            {
+                "event_id": event_id,
+                "filter_outlets": len(outlets) > 0,
+                "outlets": outlets
+            }
         ).mappings().all()
 
     return {
@@ -271,8 +333,12 @@ def run_emotion_processing():
     return process_emotions()
 
 
+
 @app.get("/api/emotion/results")
-def get_emotion_results(event_id: int):
+def get_emotion_results(
+    event_id: int,
+    outlets: list[str] = Query(default=[])
+):
     with engine.connect() as connection:
         rows = connection.execute(
             text("""
@@ -283,16 +349,22 @@ def get_emotion_results(event_id: int):
                     ar.emotion_label,
                     ar.emotion_scores
                 FROM analysis_results ar
-                JOIN articles a
-                    ON a.id = ar.article_id
-                JOIN outlets o
-                    ON o.id = a.outlet_id
+                JOIN articles a ON a.id = ar.article_id
+                JOIN outlets o ON o.id = a.outlet_id
                 WHERE a.event_id = :event_id
                   AND ar.model_name = 'VADER'
                   AND ar.emotion_label IS NOT NULL
+                  AND (
+                      :filter_outlets = FALSE
+                      OR o.name = ANY(:outlets)
+                  )
                 ORDER BY a.id DESC
             """),
-            {"event_id": event_id}
+            {
+                "event_id": event_id,
+                "filter_outlets": len(outlets) > 0,
+                "outlets": outlets
+            }
         ).mappings().all()
 
     return {
