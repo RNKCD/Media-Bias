@@ -5,6 +5,8 @@ MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"
 
 emotion_classifier = None
 
+MAX_CONTENT_TOKENS = 510
+
 
 def get_emotion_classifier():
     global emotion_classifier
@@ -29,23 +31,67 @@ def analyze_emotion(text):
         }
 
     classifier = get_emotion_classifier()
+    tokenizer = classifier.tokenizer
 
-    predictions = classifier(
+    token_ids = tokenizer.encode(
         text,
-        truncation=True,
-        max_length=512
+        add_special_tokens=False,
+        truncation=False
     )
 
-    # Handle nested output returned by some
-    # Transformers versions.
-    if predictions and isinstance(predictions[0], list):
-        predictions = predictions[0]
+    if not token_ids:
+        return {
+            "emotion_label": "unknown",
+            "emotion_scores": {}
+        }
+
+    special_tokens = tokenizer.num_special_tokens_to_add(
+        pair=False
+    )
+
+    chunk_size = min(
+        MAX_CONTENT_TOKENS,
+        tokenizer.model_max_length - special_tokens
+    )
+
+    chunks = [
+        token_ids[i:i + chunk_size]
+        for i in range(0, len(token_ids), chunk_size)
+    ]
+
+    weighted_scores = {}
+    total_tokens = 0
+
+    for chunk in chunks:
+        chunk_text = tokenizer.decode(
+            chunk,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True
+        )
+
+        predictions = classifier(
+            chunk_text,
+            truncation=True,
+            max_length=chunk_size + special_tokens
+        )
+
+        if predictions and isinstance(predictions[0], list):
+            predictions = predictions[0]
+
+        weight = len(chunk)
+        total_tokens += weight
+
+        for item in predictions:
+            label = item["label"].lower()
+
+            weighted_scores[label] = (
+                weighted_scores.get(label, 0.0)
+                + float(item["score"]) * weight
+            )
 
     scores = {
-        item["label"].lower(): round(
-            float(item["score"]), 4
-        )
-        for item in predictions
+        label: round(value / total_tokens, 4)
+        for label, value in weighted_scores.items()
     }
 
     dominant_emotion = max(

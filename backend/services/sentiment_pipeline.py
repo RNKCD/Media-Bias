@@ -27,12 +27,18 @@ def process_sentiment(event_id=None):
         for article in articles:
             headline = article["title"] or ""
 
-            if article["full_text"]:
-                body = article["full_text"]
+            full_text = (article["full_text"] or "").strip()
+            description = (article["description"] or "").strip()
+
+            if full_text:
+                body = full_text
                 text_source = "full_text"
-            else:
-                body = article["description"] or ""
+            elif description:
+                body = description
                 text_source = "description"
+            else:
+                body = ""
+                text_source = "headline"
 
             headline_result = analyze_sentiment(headline)
             body_result = analyze_sentiment(body)

@@ -19,14 +19,12 @@ def process_saved_articles(event_id=None):
                     a.id,
                     a.title,
                     a.description,
-                    a.content,
                     a.full_text
                 FROM articles a
-                LEFT JOIN nlp_results n
-                    ON a.id = n.article_id
-                WHERE n.article_id IS NULL
-                  AND (CAST(:event_id AS INTEGER) IS NULL
-                       OR a.event_id = :event_id)
+                WHERE (
+                    CAST(:event_id AS INTEGER) IS NULL
+                    OR a.event_id = :event_id
+                )
                 ORDER BY a.id
             """),
             {"event_id": event_id}
@@ -34,21 +32,18 @@ def process_saved_articles(event_id=None):
 
         for article in articles:
 
-            # Prefer full text when available.
-            # Do not concatenate NewsAPI snippets as if
-            # they were complete article bodies.
-            if article["full_text"]:
-                source_text = article["full_text"]
-            else:
-                source_text = " ".join(
-                    part for part in [
-                        article["title"],
-                        article["description"]
-                    ]
-                    if part
-                )
+            full_text = (article["full_text"] or "").strip()
+            description = (article["description"] or "").strip()
+            headline = (article["title"] or "").strip()
 
-            if not source_text.strip():
+            if full_text:
+                source_text = full_text
+            elif description:
+                source_text = description
+            else:
+                source_text = headline
+
+            if not source_text:
                 skipped += 1
                 continue
 
@@ -75,7 +70,13 @@ def process_saved_articles(event_id=None):
                         :model_name
                     )
                     ON CONFLICT (article_id)
-                    DO NOTHING
+                    DO UPDATE SET
+                        cleaned_text = EXCLUDED.cleaned_text,
+                        word_count = EXCLUDED.word_count,
+                        tokens = EXCLUDED.tokens,
+                        keywords = EXCLUDED.keywords,
+                        entities = EXCLUDED.entities,
+                        model_name = EXCLUDED.model_name
                 """),
                 {
                     "article_id": article["id"],

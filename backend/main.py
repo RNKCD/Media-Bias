@@ -20,6 +20,9 @@ from services.article_service import save_articles
 from services.nlp_pipeline import process_saved_articles
 from services.sentiment_pipeline import process_sentiment
 from services.emotion_pipeline import process_emotions
+from services.data_quality_service import evaluate_dataset_quality
+from services.extraction_service import extract_event_articles
+from services.event_matching_service import find_event_matches
 
 from sqlalchemy import text
 
@@ -372,3 +375,55 @@ def get_emotion_results(
         "total": len(rows),
         "results": [dict(row) for row in rows]
     }
+
+
+@app.post("/api/data-quality/evaluate")
+def run_data_quality_evaluation():
+    return evaluate_dataset_quality()
+
+
+@app.get("/api/data-quality/summary")
+def get_data_quality_summary(event_id: int):
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("""
+                SELECT
+                    o.name AS outlet,
+                    COUNT(*) AS total_articles,
+                    COUNT(*) FILTER (
+                        WHERE a.quality_status = 'usable_full_text'
+                    ) AS full_text_articles,
+                    COUNT(*) FILTER (
+                        WHERE a.quality_status = 'limited_text'
+                    ) AS description_only_articles,
+                    COUNT(*) FILTER (
+                        WHERE a.quality_status = 'headline_only'
+                    ) AS headline_only_articles,
+                    COUNT(*) FILTER (
+                        WHERE a.quality_status = 'insufficient_data'
+                    ) AS insufficient_articles,
+                    ROUND(
+                        AVG(a.text_word_count)::numeric, 1
+                    ) AS average_word_count
+                FROM articles a
+                JOIN outlets o ON o.id = a.outlet_id
+                WHERE a.event_id = :event_id
+                GROUP BY o.name
+                ORDER BY o.name
+            """),
+            {"event_id": event_id}
+        ).mappings().all()
+
+    return {
+        "event_id": event_id,
+        "results": [dict(row) for row in rows]
+    }
+
+
+@app.post("/api/articles/extract")
+def extract_articles(event_id: int):
+    return extract_event_articles(event_id)
+
+@app.get("/api/events/matches")
+def get_event_matches(event_id: int):
+    return find_event_matches(event_id)

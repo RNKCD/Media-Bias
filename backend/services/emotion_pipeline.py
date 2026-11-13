@@ -20,28 +20,28 @@ def process_emotions(event_id=None):
                     a.description,
                     a.full_text
                 FROM articles a
-                LEFT JOIN analysis_results ar
-                    ON ar.article_id = a.id
-                    AND ar.model_name = 'VADER'
-                WHERE ar.emotion_label IS NULL
-                  AND (
-                      CAST(:event_id AS INTEGER) IS NULL
-                      OR a.event_id = :event_id
-                  )
+                WHERE (
+                    CAST(:event_id AS INTEGER) IS NULL
+                    OR a.event_id = :event_id
+                )
                 ORDER BY a.id
             """),
             {"event_id": event_id}
         ).mappings().all()
 
         for article in articles:
-            article_text = (
-                article["full_text"]
-                or article["description"]
-                or article["title"]
-                or ""
-            )
+            full_text = (article["full_text"] or "").strip()
+            description = (article["description"] or "").strip()
+            headline = (article["title"] or "").strip()
 
-            if not article_text.strip():
+            if full_text:
+                article_text = full_text
+            elif description:
+                article_text = description
+            else:
+                article_text = headline
+
+            if not article_text:
                 skipped += 1
                 continue
 
