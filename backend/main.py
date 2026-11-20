@@ -16,13 +16,15 @@ from services.news_service import (
     DEFAULT_OUTLETS,
     MAX_OUTLETS,
 )
-from services.article_service import save_articles
+from services.article_service import save_articles, get_saved_articles
 from services.nlp_pipeline import process_saved_articles
 from services.sentiment_pipeline import process_sentiment
 from services.emotion_pipeline import process_emotions
 from services.data_quality_service import evaluate_dataset_quality
 from services.extraction_service import extract_event_articles
 from services.event_matching_service import find_event_matches
+from services.relevance_service import evaluate_event_relevance
+from services.relevance_evaluation_service import evaluate_relevance_model
 
 from sqlalchemy import text
 
@@ -76,7 +78,7 @@ def analyze_event(request: EventRequest):
         )
         articles = search_news(
             event,
-            page_size=10,
+            page_size=5,
             selected_outlets=request.outlets,
             custom_outlets=request.custom_outlets,
         )
@@ -85,6 +87,23 @@ def analyze_event(request: EventRequest):
             status_code=502,
             detail="Unable to retrieve articles from NewsAPI."
         )
+
+    except RuntimeError as error:
+        message = str(error)
+
+        if "request limit reached" in message.lower():
+            raise HTTPException(
+                status_code=429,
+                detail=message
+            )
+
+        logger.exception("NewsAPI collection failed")
+
+        raise HTTPException(
+            status_code=502,
+            detail="NewsAPI collection failed. Check server logs."
+        )
+
     except ValueError as error:
         message = str(error)
         raise HTTPException(
@@ -427,3 +446,78 @@ def extract_articles(event_id: int):
 @app.get("/api/events/matches")
 def get_event_matches(event_id: int):
     return find_event_matches(event_id)
+
+
+@app.get("/api/articles/saved")
+def fetch_saved_articles(
+    event: str,
+    outlets: list[str] = Query(default=[])
+):
+    try:
+        result = get_saved_articles(
+            event_name=event,
+            selected_outlets=outlets if outlets else None
+        )
+
+        return result
+
+    except Exception:
+        logger.exception("Failed to retrieve saved articles")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve saved articles."
+        )
+
+
+
+@app.get("/api/relevance/results")
+def get_relevance_results(
+    event_id: int,
+    source_event_id: int | None = None
+):
+    try:
+        return evaluate_event_relevance(
+            event_id=event_id,
+            source_event_id=source_event_id
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error)
+        )
+
+    except Exception:
+        logger.exception("Event relevance evaluation failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to evaluate event relevance."
+        )
+
+
+@app.get("/api/relevance/evaluate")
+def get_relevance_evaluation(
+    event_id: int,
+    source_event_id: int | None = None,
+    threshold: float = 0.60
+):
+    try:
+        return evaluate_relevance_model(
+            event_id=event_id,
+            source_event_id=source_event_id,
+            threshold=threshold
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
+
+    except Exception:
+        logger.exception("Relevance evaluation failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to evaluate relevance model."
+        )

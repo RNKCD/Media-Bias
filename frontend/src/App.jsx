@@ -81,69 +81,94 @@ const [emotionLoading, setEmotionLoading] = useState(false);
     return params;
   }
 
-  async function handleAnalyze(e) {
-    e.preventDefault();
+ 
+async function handleArticleSearch(e, mode = "saved") {
+  e.preventDefault();
 
-    if (totalSelected === 0) {
-      setError("Select or add at least one news outlet.");
-      return;
-    }
+  if (!event.trim()) {
+    setError("Please enter a news event.");
+    return;
+  }
 
-    if (totalSelected > maxOutlets) {
-      setError(`Please select at most ${maxOutlets} outlets.`);
-      return;
-    }
+  if (totalSelected === 0) {
+    setError("Select at least one news outlet.");
+    return;
+  }
 
-    setLoading(true);
-    setError("");
-    setArticles([]);
-    setSearched(false);
-    setSelectedEventId(null);
-    setNlpResults([]);
-    setSentimentResults([]);
-    setEmotionResults([]);
+  if (totalSelected > maxOutlets) {
+    setError(`Please select at most ${maxOutlets} outlets.`);
+    return;
+  }
 
-    try {
-      const response = await fetch(
-        "http://localhost:8000/api/analyze",
+  setLoading(true);
+  setError("");
+  setArticles([]);
+  setSearched(false);
+  setSelectedEventId(null);
+  setSearchedOutlets([]);
+  setNlpResults([]);
+  setSentimentResults([]);
+  setEmotionResults([]);
+
+  try {
+    const outlets = [
+      ...selectedOutlets,
+      ...customOutlets
+    ];
+
+    let response;
+
+    if (mode === "saved") {
+      const params = new URLSearchParams({
+        event: event.trim()
+      });
+
+      outlets.forEach((outlet) => {
+        params.append("outlets", outlet);
+      });
+
+      response = await fetch(
+        `http://localhost:8000/api/articles/saved?${params.toString()}`
+      );
+    } else {
+      response = await fetch(
+        "http://localhost:8000/api/articles/refresh",
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json"
           },
           body: JSON.stringify({
             event: event.trim(),
             outlets: selectedOutlets,
-            custom_outlets: customOutlets,
-          }),
+            custom_outlets: customOutlets
+          })
         }
       );
-
-      const data = await response.json();
-      console.log("Analyze API response:", data);
-
-      setSelectedEventId(data.event_id ?? null);
-      setSearchedOutlets(data.searched_outlets || []);
-      setNlpResults([]);
-      setSentimentResults([]);
-
-      if (!response.ok) {
-        throw new Error(
-          typeof data.detail === "string"
-            ? data.detail
-            : "Unable to retrieve articles."
-        );
-      }
-
-      setArticles(data.articles || []);
-      setSearched(true);
-    } catch (err) {
-      console.error(err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
     }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        typeof data.detail === "string"
+          ? data.detail
+          : "Unable to retrieve articles."
+      );
+    }
+
+    setSelectedEventId(data.event_id ?? null);
+    setSearchedOutlets(outlets);
+    setArticles(data.articles || []);
+    setSearched(true);
+
+  } catch (err) {
+    console.error(err);
+    setError(err.message || "Something went wrong.");
+  } finally {
+    setLoading(false);
   }
+}
 
 
   
@@ -290,19 +315,37 @@ const outletComparison = Object.values(
           </p>
         </div>
 
-        <form className="search-box" onSubmit={handleAnalyze}>
-          <input
-            type="text"
-            placeholder="Enter a political event..."
-            value={event}
-            onChange={(e) => setEvent(e.target.value)}
-            required
-          />
+       
 
-          <button type="submit" disabled={loading}>
-            {loading ? "Searching..." : "Find News Coverage"}
-          </button>
-        </form>
+        <form
+  className="search-box"
+  onSubmit={(e) => handleArticleSearch(e, "saved")}
+>
+  <input
+    type="text"
+    placeholder="Enter a political event..."
+    value={event}
+    onChange={(e) => setEvent(e.target.value)}
+    required
+  />
+
+  <button
+    type="submit"
+    disabled={loading}
+  >
+    {loading ? "Loading..." : "Analyze Saved Articles"}
+  </button>
+
+  <button
+    type="button"
+    disabled={loading}
+    onClick={(e) => handleArticleSearch(e, "refresh")}
+  >
+    Fetch Latest Articles
+  </button>
+</form>
+
+
 
         <section className="outlet-picker">
           <div className="outlet-picker-header">
